@@ -20,17 +20,15 @@ struct PvssConfig {
     n: usize,
 }
 
-/// (t, n) pairs mirroring the Chunky full-benchmarks table at
-/// https://alinush.org/chunky#full-benchmarks-table
+/// (t, n) pairs covering the Chunky full-benchmarks table plus smaller and
+/// larger sizes.
 fn configs() -> Vec<PvssConfig> {
-    vec![
-        PvssConfig { t: 6,   n: 8   },
-        PvssConfig { t: 11,  n: 16  },
-        PvssConfig { t: 22,  n: 32  },
-        PvssConfig { t: 43,  n: 64  },
-        PvssConfig { t: 85,  n: 128 },
-        PvssConfig { t: 169, n: 256 },
-    ]
+    let ns = [4, 8, 16, 32, 64, 128, 256, 512, 1024];
+    let ts = [3, 6, 11, 22, 43, 86,  171, 342, 683];
+    ns.iter()
+        .zip(ts.iter())
+        .map(|(&n, &t)| PvssConfig { t, n })
+        .collect()
 }
 
 fn bench_pvss(c: &mut Criterion) {
