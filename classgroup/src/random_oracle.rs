@@ -1,19 +1,20 @@
+//! Random oracle / transcript hashing primitives.
+//!
+//! `UniqueHash` provides a canonical 32-byte digest for each crypto primitive
+//! used in the Fiat–Shamir transforms. `random_oracle_to_scalar` and
+//! `random_oracle_to_ecp` map a digest to a uniformly-random Scalar / G1 point.
+
 use std::collections::BTreeMap;
 use std::ops::Deref;
-use cpp_std::VectorOfUchar;
 
-use miracl_core_bls12381::{
-    bls12381::{big, big::BIG, ecp2::ECP2, ecp::ECP},
-    hash256::HASH256,
-};
-use bicycl::cpp_vec_to_rust;
+use blstrs::{G1Projective, G2Projective, Scalar};
+use bicycl::cpp_std::VectorOfUchar;
+use bicycl::{cpp_vec_to_rust, CiphertextBox, PublicKeyBox, QFIBox};
+use sha2::{Digest, Sha256};
 
-use crate::{context::{Context, DomainSeparationContext}, hash_to_point::hash_to_ecp, rng::RAND_ChaCha20};
-use crate::scalar::rand_scalar_bls12381;
-use crate::bls12381_serde::{ecp_to_bytes, ecp2_to_bytes};
-use crate::hash_to_point::hash_to_ecp2;
-use bicycl::{CiphertextBox, PublicKeyBox, QFIBox};
-
+use crate::bls12381_serde::{ecp_to_bytes, ecp2_to_bytes, fr_to_bytes};
+use crate::context::{Context, DomainSeparationContext};
+use crate::hash_to_point::hash_to_ecp;
 
 const DOMAIN_RO_INT: &str = "crypto-random-oracle-integer";
 const DOMAIN_RO_STRING: &str = "crypto-random-oracle-string";
@@ -27,158 +28,147 @@ const DOMAIN_RO_QFI: &str = "crypto-random-oracle-qfi";
 const DOMAIN_RO_PUBLIC_KEY: &str = "crypto-random-oracle-public-key";
 const DOMAIN_RO_CIPHERTEXT: &str = "crypto-random-oracle-ciphertext";
 
-/// Hashes the unique encoding of some structured data. Each data type uses a
-/// distinct domain separator.
 pub trait UniqueHash {
     fn unique_hash(&self) -> [u8; 32];
 }
 
-/// Computes the unique digest of a string.
-///
-/// The digest is the hash of the domain separator appended with the UTF-8
-/// encoding of a string.
+fn new_hasher_with_domain(domain: &str) -> Sha256 {
+    let mut hasher = Sha256::new();
+    hasher.update(DomainSeparationContext::new(domain).as_bytes());
+    hasher
+}
+
+fn finish(hasher: Sha256) -> [u8; 32] {
+    let digest = hasher.finalize();
+    let mut out = [0u8; 32];
+    out.copy_from_slice(&digest);
+    out
+}
+
 impl UniqueHash for String {
     fn unique_hash(&self) -> [u8; 32] {
-        let mut hasher = new_hasher_with_domain(DOMAIN_RO_STRING);
-        hasher.process_array(self.as_bytes());
-        hasher.hash()
+        let mut h = new_hasher_with_domain(DOMAIN_RO_STRING);
+        h.update(self.as_bytes());
+        finish(h)
     }
 }
 
-/// Computes the unique digest of an integer.
-///
-/// The digest is the hash of the domain separator appended with the big-endian
-/// encoding of the byte representation of the integer.
 impl UniqueHash for usize {
     fn unique_hash(&self) -> [u8; 32] {
-        let mut hasher = new_hasher_with_domain(DOMAIN_RO_INT);
-        hasher.process_array(&self.to_be_bytes());
-        hasher.hash()
+        let mut h = new_hasher_with_domain(DOMAIN_RO_INT);
+        h.update(self.to_be_bytes());
+        finish(h)
     }
 }
 
-/// Computes the unique digest of a byte vector.
-///
-/// The digest is the hash of the domain separator appended with the bytes in
-/// the vector.
 impl UniqueHash for Vec<u8> {
     fn unique_hash(&self) -> [u8; 32] {
-        let mut hasher = new_hasher_with_domain(DOMAIN_RO_BYTE_ARRAY);
-        hasher.process_array(self);
-        hasher.hash()
+        let mut h = new_hasher_with_domain(DOMAIN_RO_BYTE_ARRAY);
+        h.update(self);
+        finish(h)
     }
 }
 
-/// David: unlike in Dfinity, here we don't check (and don't care) if the BIG is a Fr element.
-impl UniqueHash for BIG {
+impl UniqueHash for Scalar {
     fn unique_hash(&self) -> [u8; 32] {
-        let mut hasher = new_hasher_with_domain(DOMAIN_RO_BIG);
-        let mut miracl_buffer = [0u8; big::MODBYTES];
-        self.tobytes(&mut miracl_buffer);
-        hasher.process_array(&miracl_buffer);
-        hasher.hash()
+        let mut h = new_hasher_with_domain(DOMAIN_RO_BIG);
+        h.update(fr_to_bytes(self));
+        finish(h)
     }
 }
 
-/// Computes the unique digest of a group element in G1 of the BLS12_381 curve.
-///
-/// The digest is the hash of the domain separator appended with the
-/// serialization of the group element.
-impl UniqueHash for ECP {
+impl UniqueHash for G1Projective {
     fn unique_hash(&self) -> [u8; 32] {
-        let bytes = ecp_to_bytes(self);
-        let mut hasher = new_hasher_with_domain(DOMAIN_RO_ECP_POINT);
-        hasher.process_array(&bytes);
-        hasher.hash()
+        let mut h = new_hasher_with_domain(DOMAIN_RO_ECP_POINT);
+        h.update(ecp_to_bytes(self));
+        finish(h)
     }
 }
 
-/// Computes the unique digest of a group element in G2 of the BLS12_381 curve.
-///
-/// The digest is the hash of the domain separator appended with the
-/// serialization of the group element.
-impl UniqueHash for ECP2 {
+impl UniqueHash for G2Projective {
     fn unique_hash(&self) -> [u8; 32] {
-        let bytes = ecp2_to_bytes(self);
-        let mut hasher = new_hasher_with_domain(DOMAIN_RO_ECP2_POINT);
-        hasher.process_array(&bytes);
-        hasher.hash()
+        let mut h = new_hasher_with_domain(DOMAIN_RO_ECP2_POINT);
+        h.update(ecp2_to_bytes(self));
+        finish(h)
     }
 }
 
-/// Computes the unique digest of a qfi element.
-///
-/// The digest is the hash of the domain separator appended with the
 impl UniqueHash for QFIBox {
     fn unique_hash(&self) -> [u8; 32] {
+        let mut a_bytes = unsafe { VectorOfUchar::new() };
+        let mut b_bytes = unsafe { VectorOfUchar::new() };
+        let mut c_bytes = unsafe { VectorOfUchar::new() };
 
-        let mut a_bytes = unsafe{VectorOfUchar::new()};
-        let mut b_bytes = unsafe{VectorOfUchar::new()};
-        let mut c_bytes = unsafe{VectorOfUchar::new()};
+        let mutref_a: cpp_core::MutRef<VectorOfUchar> =
+            unsafe { cpp_core::MutRef::from_raw_ref(&mut a_bytes) };
+        let mutref_b: cpp_core::MutRef<VectorOfUchar> =
+            unsafe { cpp_core::MutRef::from_raw_ref(&mut b_bytes) };
+        let mutref_c: cpp_core::MutRef<VectorOfUchar> =
+            unsafe { cpp_core::MutRef::from_raw_ref(&mut c_bytes) };
 
-        let mutref_a_bytes : cpp_core::MutRef<VectorOfUchar> = unsafe {cpp_core::MutRef::from_raw_ref(&mut a_bytes)};
-        let mutref_b_bytes : cpp_core::MutRef<VectorOfUchar> = unsafe {cpp_core::MutRef::from_raw_ref(&mut b_bytes)};
-        let mutref_c_bytes : cpp_core::MutRef<VectorOfUchar> = unsafe {cpp_core::MutRef::from_raw_ref(&mut c_bytes)};
+        unsafe { self.0.a().mpz_to_vector(mutref_a) };
+        unsafe { self.0.b().mpz_to_vector(mutref_b) };
+        unsafe { self.0.c().mpz_to_vector(mutref_c) };
 
-        unsafe{self.0.a().mpz_to_vector(mutref_a_bytes)};
-        unsafe{self.0.b().mpz_to_vector(mutref_b_bytes)};
-        unsafe{self.0.c().mpz_to_vector(mutref_c_bytes)};
+        let a_rust = unsafe { cpp_vec_to_rust(mutref_a.deref()) };
+        let b_rust = unsafe { cpp_vec_to_rust(mutref_b.deref()) };
+        let c_rust = unsafe { cpp_vec_to_rust(mutref_c.deref()) };
 
-        let a_bytes_rust = unsafe{cpp_vec_to_rust(mutref_a_bytes.deref())};
-        let b_bytes_rust = unsafe{cpp_vec_to_rust(mutref_b_bytes.deref())};
-        let c_bytes_rust = unsafe{cpp_vec_to_rust(mutref_c_bytes.deref())};
-
-        let mut hasher = new_hasher_with_domain(DOMAIN_RO_QFI);
-
-        hasher.process_array(&a_bytes_rust);
-        hasher.process_array(&b_bytes_rust);
-        hasher.process_array(&c_bytes_rust);
-        hasher.hash()
+        let mut h = new_hasher_with_domain(DOMAIN_RO_QFI);
+        h.update(&a_rust);
+        h.update(&b_rust);
+        h.update(&c_rust);
+        finish(h)
     }
 }
 
-/// Computes the unique digest of a public key qfi element.
-///
-/// The digest is the hash of the domain separator appended with the
 impl UniqueHash for PublicKeyBox {
     fn unique_hash(&self) -> [u8; 32] {
-
-        let ffi_pk = unsafe{bicycl::__ffi::ctr_bicycl_ffi_BICYCL_QFI_QFI2(
-            cpp_core::CastInto::<cpp_core::Ref<bicycl::b_i_c_y_c_l::QFI>>::cast_into(self.0.elt())
+        let ffi_pk = unsafe {
+            bicycl::__ffi::ctr_bicycl_ffi_BICYCL_QFI_QFI2(
+                cpp_core::CastInto::<cpp_core::Ref<bicycl::b_i_c_y_c_l::QFI>>::cast_into(
+                    self.0.elt(),
+                )
                 .as_raw_ptr(),
-        )};
-        let pk_qfi = unsafe{cpp_core::CppBox::from_raw(ffi_pk)}.expect("attempted to construct a null CppBox");
+            )
+        };
+        let pk_qfi = unsafe { cpp_core::CppBox::from_raw(ffi_pk) }
+            .expect("attempted to construct a null CppBox");
 
-        let mut hasher = new_hasher_with_domain(DOMAIN_RO_PUBLIC_KEY);
-        hasher.process_array(&QFIBox(pk_qfi).unique_hash());
-
-        hasher.hash()
+        let mut h = new_hasher_with_domain(DOMAIN_RO_PUBLIC_KEY);
+        h.update(&QFIBox(pk_qfi).unique_hash());
+        finish(h)
     }
 }
 
-/// Computes the unique digest of a qfi element.
-///
-/// The digest is the hash of the domain separator appended with the
 impl UniqueHash for CiphertextBox {
     fn unique_hash(&self) -> [u8; 32] {
-
-        let ffi_c1 = unsafe{bicycl::__ffi::ctr_bicycl_ffi_BICYCL_QFI_QFI2(
-            cpp_core::CastInto::<cpp_core::Ref<bicycl::b_i_c_y_c_l::QFI>>::cast_into(self.0.c1())
+        let ffi_c1 = unsafe {
+            bicycl::__ffi::ctr_bicycl_ffi_BICYCL_QFI_QFI2(
+                cpp_core::CastInto::<cpp_core::Ref<bicycl::b_i_c_y_c_l::QFI>>::cast_into(
+                    self.0.c1(),
+                )
                 .as_raw_ptr(),
-        )};
-        let c1_qfi = unsafe{cpp_core::CppBox::from_raw(ffi_c1)}.expect("attempted to construct a null CppBox");
+            )
+        };
+        let c1_qfi = unsafe { cpp_core::CppBox::from_raw(ffi_c1) }
+            .expect("attempted to construct a null CppBox");
 
-        let ffi_c2 = unsafe{bicycl::__ffi::ctr_bicycl_ffi_BICYCL_QFI_QFI2(
-            cpp_core::CastInto::<cpp_core::Ref<bicycl::b_i_c_y_c_l::QFI>>::cast_into(self.0.c2())
+        let ffi_c2 = unsafe {
+            bicycl::__ffi::ctr_bicycl_ffi_BICYCL_QFI_QFI2(
+                cpp_core::CastInto::<cpp_core::Ref<bicycl::b_i_c_y_c_l::QFI>>::cast_into(
+                    self.0.c2(),
+                )
                 .as_raw_ptr(),
-        )};
-        let c2_qfi = unsafe{cpp_core::CppBox::from_raw(ffi_c2)}.expect("attempted to construct a null CppBox");
+            )
+        };
+        let c2_qfi = unsafe { cpp_core::CppBox::from_raw(ffi_c2) }
+            .expect("attempted to construct a null CppBox");
 
-        let mut hasher = new_hasher_with_domain(DOMAIN_RO_CIPHERTEXT);
-        hasher.process_array(&QFIBox(c1_qfi).unique_hash());
-        hasher.process_array(&QFIBox(c2_qfi).unique_hash());
-
-        hasher.hash()
+        let mut h = new_hasher_with_domain(DOMAIN_RO_CIPHERTEXT);
+        h.update(&QFIBox(c1_qfi).unique_hash());
+        h.update(&QFIBox(c2_qfi).unique_hash());
+        finish(h)
     }
 }
 
@@ -188,35 +178,26 @@ impl UniqueHash for Box<dyn UniqueHash> {
     }
 }
 
-/// Computes the unique digest of a vector.
-///
-/// The digest is the hash of the domain separator concatenated with the unique
-/// digests of the entries in the vector.
 impl<T: UniqueHash> UniqueHash for Vec<T> {
     fn unique_hash(&self) -> [u8; 32] {
-        let mut hasher = new_hasher_with_domain(DOMAIN_RO_VECTOR);
-        for item in self.iter() {
-            hasher.process_array(&item.unique_hash())
+        let mut h = new_hasher_with_domain(DOMAIN_RO_VECTOR);
+        for item in self {
+            h.update(item.unique_hash());
         }
-        hasher.hash()
+        finish(h)
     }
 }
 
-/// Computes the unique digest of a vector with entries of different types.
 impl UniqueHash for Vec<&dyn UniqueHash> {
     fn unique_hash(&self) -> [u8; 32] {
-        let mut hasher = new_hasher_with_domain(DOMAIN_RO_VECTOR);
-        for item in self.iter() {
-            hasher.process_array(&item.unique_hash())
+        let mut h = new_hasher_with_domain(DOMAIN_RO_VECTOR);
+        for item in self {
+            h.update(item.unique_hash());
         }
-        hasher.hash()
+        finish(h)
     }
 }
 
-/// Ordered map storing the unique digests of values using unique digests as the
-/// keys.
-///
-/// It is used to store the digests of key-value pairs of an HashableMap.
 pub struct HashedMap(pub BTreeMap<[u8; 32], [u8; 32]>);
 
 impl Default for HashedMap {
@@ -230,10 +211,6 @@ impl HashedMap {
         Self(BTreeMap::new())
     }
 
-    /// Inserts the digest of `value` using the digest of `key` as the key.
-    ///
-    /// If the digest of the key is not in the map, it returns None.
-    /// Otherwise, it updates the hashed value and returns the old digest.
     pub fn insert_hashed<S: ToString, T: UniqueHash>(
         &mut self,
         key: S,
@@ -244,69 +221,42 @@ impl HashedMap {
     }
 }
 
-/// Computes the domain separated hash of an HashedMap.
-///
-/// The digest is the hash of the domain separator concatenated with the sorted
-/// key-value pairs. Note: keys and values in an HashedMap are digests.
 impl UniqueHash for HashedMap {
     fn unique_hash(&self) -> [u8; 32] {
-        let mut hasher = new_hasher_with_domain(DOMAIN_RO_MAP);
-        // This iterates over the entries of a map sorted by key.
-        for (hashed_key, hashed_value) in self.0.iter() {
-            hasher.process_array(hashed_key);
-            hasher.process_array(hashed_value)
+        let mut h = new_hasher_with_domain(DOMAIN_RO_MAP);
+        for (k, v) in self.0.iter() {
+            h.update(k);
+            h.update(v);
         }
-        hasher.hash()
+        finish(h)
     }
 }
 
-/// Initializes an hasher with a DomainSeparationContext string.
-fn new_hasher_with_domain(domain: &str) -> HASH256 {
-    let mut state = HASH256::new();
-    state.process_array(&DomainSeparationContext::new(domain).as_bytes());
-    state
-}
-
-/// Computes the hash of a struct using an hash function that can be modelled as
-/// a random oracle.
-///
-/// The digest is the hash of `domain` appended with the unique digest of
-/// `data`. A distinct `domain` should be used for each purpose of the random
-/// oracle.
 pub fn random_oracle(domain: &str, data: &dyn UniqueHash) -> [u8; 32] {
-    let mut hasher = new_hasher_with_domain(domain);
-    hasher.process_array(&data.unique_hash());
-    hasher.hash()
+    let mut h = new_hasher_with_domain(domain);
+    h.update(data.unique_hash());
+    finish(h)
 }
 
-/// Computes the hash of a struct using an hash function that can be modelled as
-/// a random oracle. Returns an element in the scalar field of curve BLS12_381.
-///
-/// A distinct `domain` should be used for each purpose of the random oracle.
-pub fn random_oracle_to_scalar(domain: &str, data: &dyn UniqueHash) -> BIG {
-    let hash = random_oracle(domain, data);
-    let rng = &mut RAND_ChaCha20::new(hash);
-    rand_scalar_bls12381(rng)
+/// Hash `data` into a field element. We shave the two most significant bits of
+/// the 32-byte digest so the result is in `[0, 2^254)`, which is below the
+/// BLS12-381 scalar field order q. This yields a challenge with ~254 bits of
+/// entropy — overkill for Fiat–Shamir at 128-bit security.
+pub fn random_oracle_to_scalar(domain: &str, data: &dyn UniqueHash) -> Scalar {
+    let mut digest = random_oracle(domain, data);
+    digest[0] &= 0x3f;
+    let ct = Scalar::from_bytes_be(&digest);
+    if bool::from(ct.is_some()) {
+        ct.unwrap()
+    } else {
+        // Unreachable given the shave above, but kept so we never panic.
+        Scalar::default()
+    }
 }
 
-/// Computes the hash of a struct using an hash function that can be modelled as
-/// a random oracle. Returns a group element of G1 in BLS12_381.
-///
-/// A distinct `domain` should be used for each purpose of the random oracle.
-pub fn random_oracle_to_ecp(domain: &str, data: &dyn UniqueHash) -> ECP {
+pub fn random_oracle_to_ecp(domain: &str, data: &dyn UniqueHash) -> G1Projective {
     hash_to_ecp(
-        DomainSeparationContext::new(domain).as_bytes(),
         &data.unique_hash(),
-    )
-}
-
-/// Computes the hash of a struct using an hash function that can be modelled as
-/// a random oracle. Returns a group element of G2 in BLS12_381.
-///
-/// A distinct `domain` should be used for each purpose of the random oracle.
-pub fn random_oracle_to_ecp2(domain: &str, data: &dyn UniqueHash) -> ECP2 {
-    hash_to_ecp2(
         DomainSeparationContext::new(domain).as_bytes(),
-        &data.unique_hash(),
     )
 }

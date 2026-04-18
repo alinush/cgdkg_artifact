@@ -1,5 +1,5 @@
 # Ignore the target directory
-/target/
+target/
 
 # Ignore compiled dynamic libraries
 *.dylib

@@ -1,6 +1,8 @@
-use miracl_core_bls12381::bls12381::ecp;
-use miracl_core_bls12381::hmac;
+//! Seed derivation helper used to seed a ChaCha20 RNG from arbitrary input.
+
+use sha2::{Digest, Sha256};
 use zeroize::Zeroize;
+
 use crate::rng::RAND_ChaCha20;
 
 const SEED_LEN: usize = 32;
@@ -13,27 +15,19 @@ pub struct Seed {
 
 impl Seed {
     fn new(input: &[u8], domain_separator: &str) -> Self {
-        let hash = hmac::MC_SHA2;
-        let hlen = ecp::HASH_TYPE;
-        let mut derived = [0u8; SEED_LEN];
-        hmac::xmd_expand(hash, hlen, &mut derived, SEED_LEN, domain_separator.as_bytes(), input);
-
-        Self {
-            value: derived,
-        }
+        let mut hasher = Sha256::new();
+        hasher.update(domain_separator.as_bytes());
+        hasher.update(input);
+        let digest = hasher.finalize();
+        let mut value = [0u8; SEED_LEN];
+        value.copy_from_slice(&digest);
+        Self { value }
     }
 
-    /// Create a Seed from some input string
-    ///
-    /// If the Seed is intended to be random the input should be at least 256
-    /// bits long.
     pub fn from_bytes(value: &[u8]) -> Self {
         Self::new(value, "crypto-seed-from-bytes")
     }
 
-    /// Convert a Seed into a random number generator
-    ///
-    /// The Seed is consumed by this operation
     pub fn into_rng(self) -> RAND_ChaCha20 {
         RAND_ChaCha20::new(self.value)
     }

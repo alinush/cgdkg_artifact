@@ -55,6 +55,18 @@
 
     {
       "target": {
+        "arch": "AArch64",
+        "os": "MacOS",
+        "family": "Unix",
+        "env": "None",
+        "pointer_width": "P64",
+        "endian": "Little"
+      },
+      "cpp_library_version": "6.4.2"
+    },
+
+    {
+      "target": {
         "arch": "X86_64",
         "os": "Linux",
         "family": "Unix",

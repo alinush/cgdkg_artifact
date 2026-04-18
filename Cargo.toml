@@ -13,9 +13,10 @@ criterion = "0.5.1"
 miracl_core_bls12381 = "4.1.2"
 bicycl = {path = "supra-bicycl" }
 
-[[bench]]
-name = "benchmarks_cgdkg"
-harness = false
+# benchmarks_cgdkg disabled: it uses the old MIRACL-based classgroup API.
+# [[bench]]
+# name = "benchmarks_cgdkg"
+# harness = false
 
 [[bench]]
 name = "benchmarks_grothdkg"
@@ -23,6 +24,10 @@ harness = false
 
 [[bench]]
 name = "benchmarks_cd_dkg"
+harness = false
+
+[[bench]]
+name = "benchmarks_pvss"
 harness = false
 
 [[bin]]

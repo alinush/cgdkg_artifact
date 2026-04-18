@@ -9,13 +9,25 @@ arrayvec = "0.7.2"
 hex = "0.4.2"
 cpp_std = "0.1.1"
 bicycl = {path = "../supra-bicycl" }
-miracl_core_ed25519 = "0.2.0"
-miracl_core_bls12381 = "4.1.2"
+
+# blstrs provides hand-tuned BLS12-381 via the `blst` C/asm library.
+blstrs = "0.7"
+# Features are additive, so adding `no-threads` here turns off blst's built-in
+# Pippenger thread pool even though blstrs pulls blst with defaults.
+blst = { version = "0.3", features = ["no-threads"] }
+ff = "0.13"
+group = "0.13"
+pairing = "0.23"
+sha2 = "0.10"
 
 rand = "0.8"
-rand_chacha = "0.2.2"
+rand_core = "0.6"
+rand_chacha = "0.3"
 zeroize = { version = "1.4.3", features = ["zeroize_derive"] }
 anyhow = "1.0.82"
+
+[dev-dependencies]
+proptest = "1.0.0"
 
 [build-dependencies.ritual_build]
 git = "https://github.com/rust-qt/ritual.git"
